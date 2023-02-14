@@ -1,4 +1,5 @@
 use tide::prelude::*;
+use std::fs::{File,self};
 //use serde_json::Value;
 
 use once_cell::sync::Lazy;
@@ -7,7 +8,7 @@ mod message;
 pub use message::*;
 
 const TOKEN: Lazy<String> =
-    Lazy::new(|| std::fs::read_to_string("token").expect("failed to read token file"));
+    Lazy::new(|| fs::read_to_string("token").expect("failed to read token file"));
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -59,7 +60,7 @@ async fn test() {
         messages: vec![
             //Box::new(SimpleMessage::new("あいうえお")),
             //Box::new(SimpleMessage::new("かきくけこ")),
-            Box::new(FlexMessage::new(serde_json::from_reader(std::fs::File::open("vote_flex_message.json").unwrap()).unwrap())),
+            Box::new(FlexMessage::new(serde_json::from_reader(File::open("vote_flex_message.json").unwrap()).unwrap())),
         ],
     };
     message.send().await;
