@@ -1,31 +1,58 @@
-use tide::prelude::*;
-use std::fs::{File,self};
+use std::net::SocketAddr;
+use std::{
+    fs,
+    path::PathBuf,
+};
 //use serde_json::Value;
-
+use axum::*;
+use axum::body::Bytes;
+use axum_server::tls_rustls::*;
 use once_cell::sync::Lazy;
+use serde::Serialize;
 
 mod message;
 pub use message::*;
 
 const TOKEN: Lazy<String> =
     Lazy::new(|| fs::read_to_string("token").expect("failed to read token file"));
+const TLS_KEY_DIR: Lazy<PathBuf> =
+    Lazy::new(|| PathBuf::from(&fs::read_to_string("TLS_KEY_DIR_PATH").expect("failed to read TLS_KEY_DIR_PATH file")));
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    // ログ記録開始
-    tide::log::start();
-    // インスタンス生成
-    let mut app = tide::new();
-    // ルーティングとHTTPメソッドを設定し、何をするか決める
-    app.at("/").post(|_| async move {
-        // Pong型のresをjsonで返します
-        Ok(json!(""))
-    });
-    // webサーバーがどのIPアドレス、ポートで受け付けるか設定する
-    let listener = app.listen("127.0.0.1:8080");
-    listener.await?;
-    // 何もなければOkでタプルを返す
+    let app = Router::new().route("/ping", routing::get(ping))
+    .route("/", routing::post(print_request));
+
+    let rustls_config = RustlsConfig::from_pem_file(
+        TLS_KEY_DIR.join("fullchain.pem"), 
+        TLS_KEY_DIR.join("privkey.pem")
+    )
+    .await
+    .unwrap();
+
+    let addr = SocketAddr::from(([192, 168, 1, 19], 443));
+    axum_server::bind_rustls(addr, rustls_config)
+        .serve(app.clone().into_make_service())
+        .await
+        .unwrap();
+
+    //let addr = SocketAddr::from(([127, 0, 0, 1], 80));
+    //axum::Server::bind(&addr)
+    //    .serve(app.into_make_service())
+    //    .await
+    //    .unwrap();
+
     Ok(())
+}
+
+async fn ping() -> &'static str {
+    println!("ping!");
+    "Hello, World!"
+}
+
+async fn print_request(body:Bytes) -> &'static str {
+    println!("{}",String::from_utf8(body.to_vec()).unwrap());
+    "Ok"
 }
 
 #[derive(Serialize)]
@@ -60,7 +87,9 @@ async fn test() {
         messages: vec![
             //Box::new(SimpleMessage::new("あいうえお")),
             //Box::new(SimpleMessage::new("かきくけこ")),
-            Box::new(FlexMessage::new(serde_json::from_reader(File::open("vote_flex_message.json").unwrap()).unwrap())),
+            Box::new(FlexMessage::new(
+                serde_json::from_reader(fs::File::open("vote_flex_message.json").unwrap()).unwrap(),
+            )),
         ],
     };
     message.send().await;
