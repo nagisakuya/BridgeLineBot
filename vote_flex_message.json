@@ -33,7 +33,7 @@
               "action": {
                 "type": "postback",
                 "label": "出席",
-                "data": "yes"
+                "data": "%ID%,attend"
               }
             },
             {
@@ -41,7 +41,7 @@
               "action": {
                 "type": "postback",
                 "label": "保留",
-                "data": "hello"
+                "data": "%ID%,holding"
               }
             },
             {
@@ -49,7 +49,7 @@
               "action": {
                 "type": "postback",
                 "label": "欠席",
-                "data": "hello"
+                "data": "%ID%,absent"
               }
             }
           ]
