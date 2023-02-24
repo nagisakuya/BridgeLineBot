@@ -10,6 +10,7 @@ use chrono::{prelude::*, Duration};
 
 mod message;
 pub use message::*;
+use serde_json::Value;
 use sqlx::Row;
 
 const TOKEN: Lazy<String> =
@@ -26,7 +27,8 @@ async fn main() -> Result<(), std::io::Error> {
 
     let app = Router::new()
         .route("/ping", routing::get(ping))
-        .route("/", routing::post(print_request));
+        .route("/test", routing::post(print_request))
+        .route("/line/webhook", routing::post(resieve_webhook));
 
     let rustls_config = RustlsConfig::from_pem_file(
         TLS_KEY_DIR.join("fullchain.pem"),
@@ -58,6 +60,57 @@ async fn ping() -> &'static str {
 async fn print_request(body: Bytes) -> &'static str {
     println!("{}", String::from_utf8(body.to_vec()).unwrap());
     "Ok"
+}
+
+async fn resieve_webhook(body: Bytes) {
+    let body = match String::from_utf8(body.to_vec()) {
+        Ok(x) => x,
+        Err(_) => {
+            return
+        }
+    };
+    println!("{}", body);
+    let json: Value = match serde_json::from_str(&body) {
+        Ok(x) => {x},
+        Err(_) => {return},
+    };
+    let event = json.get("events").unwrap().get(0).unwrap();
+    let event_type = event.get("type").map(|f|f.as_str().unwrap());
+    if event_type == Some("postback") {
+        insert_attendance(&event).await;
+    }
+}
+
+async fn insert_attendance(event: &Value) -> Option<()> {
+    let data = event.get("postback")?.get("data")?.as_str()?;
+    let datas: Vec<_> = data.split(',').collect();
+    let attendance_id = datas[0];
+    let status = datas[1];
+    let user_id = event.get("source")?.get("userId")?.as_str()?;
+
+    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
+    let result = sqlx::query(&format!("select * from {attendance_id} where user_id=?"))
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await;
+    if result.is_ok() {
+        let _ = sqlx::query(&format!(
+            "update {attendance_id} set status=? where user_id=?"
+        ))
+        .bind(status)
+        .bind(user_id)
+        .execute(&pool)
+        .await;
+    } else {
+        let _ = sqlx::query(&format!(
+            "insert into {attendance_id}(user_id,status) values(?,?)"
+        ))
+        .bind(user_id)
+        .bind(status)
+        .execute(&pool)
+        .await;
+    }
+    Some(())
 }
 
 async fn create_attendance_check(
@@ -104,6 +157,11 @@ fn generate_flex(id: &str) -> serde_json::Value {
 async fn test() {
     let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
     create_attendance_check(pool, Local::now(), Duration::seconds(100)).await;
+}
+
+#[tokio::test]
+async fn test2() {
+    println!("{}", &"aiueo");
 }
 
 #[tokio::test]
