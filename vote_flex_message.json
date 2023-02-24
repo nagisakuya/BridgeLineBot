@@ -48,7 +48,7 @@
               "type": "button",
               "action": {
                 "type": "postback",
-                "label": "欠席",
+                "label": "不参加",
                 "data": "%ID%,absent"
               }
             }
@@ -59,7 +59,7 @@
           "action": {
             "type": "uri",
             "label": "結果",
-            "uri": "http://linecorp.com/"
+            "uri": "https://%HOST%/line/result/%ID%"
           }
         }
       ],

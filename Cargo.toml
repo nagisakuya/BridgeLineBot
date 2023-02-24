@@ -17,3 +17,5 @@ axum-server = {version = "0.4.5", features = ["tls-rustls"]}
 sqlx = {version ="0.6.2", features = ["runtime-tokio-rustls","sqlite","chrono"]}
 chrono = "*"
 rand = "*"
+html-builder = "0.5.0"
+toml = "*"

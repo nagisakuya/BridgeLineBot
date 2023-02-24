@@ -1,6 +1,6 @@
 use super::*;
 use erased_serde::serialize_trait_object;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 
 #[derive(Serialize)]
@@ -9,7 +9,7 @@ pub struct BloadcastMessage {
 }
 impl BloadcastMessage {
     pub async fn send(&self) {
-        let resp = send_request(
+        let resp = send_post_request(
             "https://api.line.me/v2/bot/message/broadcast",
             &serde_json::to_string(self).unwrap(),
         )
@@ -18,15 +18,42 @@ impl BloadcastMessage {
     }
 }
 
-async fn send_request(url: &str, body: &str) -> Result<reqwest::Response, reqwest::Error> {
+#[allow(non_snake_case)]
+#[derive(Deserialize)]
+pub struct UserProfile{
+    pub displayName:String,
+    pub userId:String,
+    pub language:String,
+    pub pictureUrl:String,
+    pub statusMessage:String
+}
+pub async fn get_user_profile(user_id:String) -> Option<UserProfile>{
+    let resp = send_get_request(&format!("https://api.line.me/v2/bot/profile/{user_id}")).await.unwrap();
+    if resp.status() != 200{
+        return None;
+    }
+    let profile:UserProfile = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    Some(profile)
+}
+
+async fn send_get_request(url: &str) -> Result<reqwest::Response> {
     let client = reqwest::Client::new();
-    client
+    Ok(client
+        .get(url)
+        .bearer_auth(SETTINGS.TOKEN.to_string())
+        .send()
+        .await?)
+}
+
+async fn send_post_request(url: &str, body: &str) -> Result<reqwest::Response> {
+    let client = reqwest::Client::new();
+    Ok(client
         .post(url)
         .header("Content-Type", "application/json")
-        .bearer_auth(TOKEN.to_string())
+        .bearer_auth(SETTINGS.TOKEN.to_string())
         .body(body.to_string())
         .send()
-        .await
+        .await?)
 }
 
 #[tokio::test]

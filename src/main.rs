@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 use std::{fs, path::PathBuf};
 //use serde_json::Value;
 use axum::body::Bytes;
+use axum::extract::Path;
+use axum::response::Html;
 use axum::*;
 use axum_server::tls_rustls::*;
 use once_cell::sync::Lazy;
@@ -13,26 +15,35 @@ pub use message::*;
 use serde_json::Value;
 use sqlx::Row;
 
-const TOKEN: Lazy<String> =
-    Lazy::new(|| fs::read_to_string("token").expect("failed to read token file"));
-const TLS_KEY_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    PathBuf::from(
-        &fs::read_to_string("TLS_KEY_DIR_PATH").expect("failed to read TLS_KEY_DIR_PATH file"),
-    )
-});
+#[allow(non_snake_case)]
+#[derive(serde::Deserialize)]
+struct Settings {
+    TOKEN: String,
+    TLS_KEY_DIR_PATH: PathBuf,
+    HOST: String,
+}
+
+const SETTINGS: Lazy<Settings> =
+    Lazy::new(|| toml::from_str(&fs::read_to_string("settings.toml").unwrap()).unwrap());
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
+async fn main() -> Result<()> {
     //let sqlite = sqlx::sqlite::SqliteConnection::connect("sqlite::memory:").await?;
 
     let app = Router::new()
         .route("/ping", routing::get(ping))
         .route("/test", routing::post(print_request))
-        .route("/line/webhook", routing::post(resieve_webhook));
+        .route("/line/webhook", routing::post(resieve_webhook))
+        .route(
+            "/line/result/:id",
+            routing::get(move |path| result_page(path)),
+        );
 
     let rustls_config = RustlsConfig::from_pem_file(
-        TLS_KEY_DIR.join("fullchain.pem"),
-        TLS_KEY_DIR.join("privkey.pem"),
+        SETTINGS.TLS_KEY_DIR_PATH.join("fullchain.pem"),
+        SETTINGS.TLS_KEY_DIR_PATH.join("privkey.pem"),
     )
     .await
     .unwrap();
@@ -65,17 +76,15 @@ async fn print_request(body: Bytes) -> &'static str {
 async fn resieve_webhook(body: Bytes) {
     let body = match String::from_utf8(body.to_vec()) {
         Ok(x) => x,
-        Err(_) => {
-            return
-        }
+        Err(_) => return,
     };
     println!("{}", body);
     let json: Value = match serde_json::from_str(&body) {
-        Ok(x) => {x},
-        Err(_) => {return},
+        Ok(x) => x,
+        Err(_) => return,
     };
     let event = json.get("events").unwrap().get(0).unwrap();
-    let event_type = event.get("type").map(|f|f.as_str().unwrap());
+    let event_type = event.get("type").map(|f| f.as_str().unwrap());
     if event_type == Some("postback") {
         insert_attendance(&event).await;
     }
@@ -111,6 +120,77 @@ async fn insert_attendance(event: &Value) -> Option<()> {
         .await;
     }
     Some(())
+}
+
+async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
+    use html_builder::*;
+    use std::fmt::Write;
+
+    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
+    let query = &format!("select * from {attendance_id} where status = ?");
+    let attend: Vec<String> = sqlx::query_scalar(query)
+        .bind("attend")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let holding: Vec<String> = sqlx::query_scalar(query)
+        .bind("holding")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let absent: Vec<String> = sqlx::query_scalar(query)
+        .bind("absent")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+    let mut buf = Buffer::new();
+    let mut html = buf.html().attr("lang='jp'");
+    writeln!(html.title(), "結果").unwrap();
+    writeln!(html.h1(), "参加{}人", attend.len()).unwrap();
+    writeln!(html.h1(), "保留{}人", holding.len()).unwrap();
+    writeln!(html.h1(), "不参加{}人", absent.len()).unwrap();
+    let mut table = html.table();
+    let mut tr = table.tr();
+    writeln!(tr.th(), "参加").unwrap();
+    writeln!(tr.th(), "保留").unwrap();
+    writeln!(tr.th(), "不参加").unwrap();
+    let mut tr = table.tr().attr("border=\"1\"");
+    let mut td = tr.td();
+    let unknown_user = "unknown_user";
+    for user_id in attend {
+        writeln!(
+            td,
+            "{}",
+            get_user_profile(user_id)
+                .await
+                .map_or(unknown_user.to_string(), |f| f.displayName)
+        )
+        .unwrap();
+    }
+    let mut td = tr.td();
+    for user_id in holding {
+        writeln!(
+            td,
+            "{}",
+            get_user_profile(user_id)
+                .await
+                .map_or(unknown_user.to_string(), |f| f.displayName)
+        )
+        .unwrap();
+    }
+    let mut td = tr.td();
+    for user_id in absent {
+        writeln!(
+            td,
+            "{}",
+            get_user_profile(user_id)
+                .await
+                .map_or(unknown_user.to_string(), |f| f.displayName)
+        )
+        .unwrap();
+    }
+    Html::from(buf.finish())
 }
 
 async fn create_attendance_check(
@@ -150,6 +230,7 @@ async fn create_attendance_check(
 fn generate_flex(id: &str) -> serde_json::Value {
     let mut text = fs::read_to_string("vote_flex_message.json").unwrap();
     text = text.replace("%ID%", id);
+    text = text.replace("%HOST%", &SETTINGS.HOST);
     serde_json::from_str(&text).unwrap()
 }
 
