@@ -1,7 +1,6 @@
 use super::*;
 use erased_serde::serialize_trait_object;
-use serde::{Serialize, Deserialize};
-
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 pub struct BloadcastMessage {
@@ -18,21 +17,53 @@ impl BloadcastMessage {
     }
 }
 
+#[derive(Serialize)]
+pub struct PushMessage {
+    pub to: String,
+    pub messages: Vec<Box<dyn Message>>,
+}
+impl PushMessage {
+    pub async fn send(&self) {
+        println!("{}", serde_json::to_string(self).unwrap());
+        let resp = send_post_request(
+            "https://api.line.me/v2/bot/message/push",
+            &serde_json::to_string(self).unwrap(),
+        )
+        .await;
+        println!("{:?}", resp);
+    }
+}
+
 #[allow(non_snake_case)]
 #[derive(Deserialize)]
-pub struct UserProfile{
-    pub displayName:String,
-    pub userId:String,
-    pub language:String,
-    pub pictureUrl:String,
-    pub statusMessage:String
+pub struct UserProfile {
+    pub displayName: String,
+    pub userId: String,
+    pub language: String,
+    pub pictureUrl: String,
+    pub statusMessage: String,
 }
-pub async fn get_user_profile(user_id:String) -> Option<UserProfile>{
-    let resp = send_get_request(&format!("https://api.line.me/v2/bot/profile/{user_id}")).await.unwrap();
-    if resp.status() != 200{
+pub async fn get_user_profile_from_friend(user_id: String) -> Option<UserProfile> {
+    let resp = send_get_request(&format!("https://api.line.me/v2/bot/profile/{user_id}"))
+        .await
+        .unwrap();
+    if resp.status() != 200 {
         return None;
     }
-    let profile:UserProfile = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    let profile: UserProfile = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    Some(profile)
+}
+
+pub async fn get_user_profile_from_group(user_id: String, group_id: &str) -> Option<UserProfile> {
+    let resp = send_get_request(&format!(
+        "https://api.line.me/v2/bot/room/{group_id}/member/{user_id}"
+    ))
+    .await
+    .unwrap();
+    if resp.status() != 200 {
+        return None;
+    }
+    let profile: UserProfile = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
     Some(profile)
 }
 
@@ -64,6 +95,7 @@ async fn send_bloadcast_test() {
             //Box::new(SimpleMessage::new("かきくけこ")),
             Box::new(FlexMessage::new(
                 serde_json::from_reader(fs::File::open("vote_flex_message.json").unwrap()).unwrap(),
+                "てすと",
             )),
         ],
     };
@@ -105,10 +137,10 @@ pub struct FlexMessage {
     pub json: serde_json::Value,
 }
 impl FlexMessage {
-    pub fn new(json: serde_json::Value) -> Self {
+    pub fn new(json: serde_json::Value, text: &str) -> Self {
         FlexMessage {
             type_: "flex".to_string(),
-            altText: "altText:flexMessageです".to_string(),
+            altText: text.to_string(),
             json: json,
         }
     }

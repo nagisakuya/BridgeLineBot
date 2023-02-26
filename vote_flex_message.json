@@ -13,7 +13,7 @@
       "contents": [
         {
           "type": "text",
-          "text": "出欠確認",
+          "text": "%DESCRIPTION%",
           "weight": "bold",
           "size": "xl"
         }

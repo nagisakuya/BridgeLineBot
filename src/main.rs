@@ -5,6 +5,7 @@ use axum::*;
 use axum_server::tls_rustls::*;
 use chrono::{prelude::*, Duration};
 use once_cell::sync::Lazy;
+use reqwest::StatusCode;
 use serde_json::Value;
 use sqlx::Row;
 use std::net::SocketAddr;
@@ -72,9 +73,9 @@ async fn ping() -> &'static str {
     "Hello, World!"
 }
 
-async fn print_request(body: Bytes) -> &'static str {
+async fn print_request(body: Bytes) -> StatusCode {
     println!("{}", String::from_utf8(body.to_vec()).unwrap());
-    "Ok"
+    StatusCode::OK
 }
 
 async fn resieve_webhook(body: Bytes) {
@@ -126,10 +127,12 @@ async fn insert_attendance(event: &Value) -> Option<()> {
     Some(())
 }
 
-async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
-    use html_builder::*;
-    use std::fmt::Write;
-
+struct Attendance {
+    attend: Vec<String>,
+    holding: Vec<String>,
+    absent: Vec<String>,
+}
+async fn get_attendance_status(attendance_id: &str) -> Attendance {
     let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
     let query = &format!("select * from {attendance_id} where status = ?");
     let attend: Vec<String> = sqlx::query_scalar(query)
@@ -147,6 +150,29 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
         .fetch_all(&pool)
         .await
         .unwrap();
+    Attendance {
+        attend,
+        holding,
+        absent,
+    }
+}
+
+async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
+    use html_builder::*;
+    use std::fmt::Write;
+
+    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
+    let Attendance {
+        attend,
+        holding,
+        absent,
+    } = get_attendance_status(&attendance_id).await;
+    let group_id: String = sqlx::query("select * from schedule where attendance_id = ?")
+        .bind(attendance_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get("group_id");
 
     let mut buf = Buffer::new();
     let mut html = buf.html().attr("lang='jp'");
@@ -166,7 +192,7 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
         writeln!(
             td,
             "{}",
-            get_user_profile(user_id)
+            get_user_profile_from_group(user_id, &group_id)
                 .await
                 .map_or(unknown_user.to_string(), |f| f.displayName)
         )
@@ -177,7 +203,7 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
         writeln!(
             td,
             "{}",
-            get_user_profile(user_id)
+            get_user_profile_from_group(user_id, &group_id)
                 .await
                 .map_or(unknown_user.to_string(), |f| f.displayName)
         )
@@ -188,7 +214,7 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
         writeln!(
             td,
             "{}",
-            get_user_profile(user_id)
+            get_user_profile_from_group(user_id, &group_id)
                 .await
                 .map_or(unknown_user.to_string(), |f| f.displayName)
         )
@@ -197,20 +223,20 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
     Html::from(buf.finish())
 }
 
-async fn create_attendance_check(time: DateTime<Local>, duration: Duration) {
+async fn create_attendance_check(finishing_time: DateTime<Local>, group_id: &str) -> Schedule {
     //ランダムid生成
     use rand::Rng;
     let attendance_id = "attendance".to_owned() + &rand::thread_rng().gen::<u64>().to_string();
 
     //sqlに登録
     let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
-    sqlx::query("insert into schedule(type,status,text,gourp_id,sending_schedule,finishing_schedule,attendance_id) values(?,?,?,?,?,?,?)")
+    sqlx::query("insert into schedule(type,status,text,group_id,finishing_schedule,attendance_id) values(?,?,?,?,?,?)")
     .bind("attendance")
     .bind("unsended")
     .bind("出欠確認")
+    .bind(group_id)
     .bind(Option::<String>::None)
-    .bind(time - duration)
-    .bind(time)
+    .bind(finishing_time)
     .bind(&attendance_id)
     .execute(&pool).await.unwrap();
 
@@ -222,16 +248,49 @@ async fn create_attendance_check(time: DateTime<Local>, duration: Duration) {
     .await
     .unwrap();
 
-    //(とりあえず)メッセージ送信
-    let message = BloadcastMessage {
-        messages: vec![Box::new(FlexMessage::new(generate_flex(&attendance_id)))],
+    //メッセージ送信
+    let text = format!(
+        "{}/{}({})練習会出欠",
+        finishing_time.month(),
+        finishing_time.day(),
+        weekday_to_jp(finishing_time.weekday())
+    );
+    let message = PushMessage {
+        to: group_id.to_string(),
+        messages: vec![Box::new(FlexMessage::new(
+            generate_flex(&attendance_id, &text),
+            &text,
+        ))],
     };
-
     message.send().await;
+
+    Schedule {
+        stype: ScheduleType::OneTime {
+            datetime: finishing_time,
+        },
+        todo: Todo::SendAttendanceInfo {
+            attendance_id,
+            group_id: group_id.to_string(),
+        },
+        exception: vec![],
+    }
 }
 
-fn generate_flex(id: &str) -> serde_json::Value {
+fn weekday_to_jp(weekday: chrono::Weekday) -> String {
+    match weekday {
+        Weekday::Sun => "日".to_string(),
+        Weekday::Mon => "月".to_string(),
+        Weekday::Tue => "火".to_string(),
+        Weekday::Wed => "水".to_string(),
+        Weekday::Thu => "木".to_string(),
+        Weekday::Fri => "金".to_string(),
+        Weekday::Sat => "土".to_string(),
+    }
+}
+
+fn generate_flex(id: &str, description: &str) -> serde_json::Value {
     let mut text = fs::read_to_string("vote_flex_message.json").unwrap();
+    text = text.replace("%DESCRIPTION%", description);
     text = text.replace("%ID%", id);
     text = text.replace("%HOST%", &SETTINGS.HOST);
     serde_json::from_str(&text).unwrap()
@@ -239,7 +298,11 @@ fn generate_flex(id: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn test() {
-    create_attendance_check(Local::now(), Duration::seconds(100)).await;
+    create_attendance_check(
+        Local::now() + Duration::seconds(30),
+        "Cfa4de6aca6e93eceb803de886e448330",
+    )
+    .await;
 }
 
 #[tokio::test]
