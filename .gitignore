@@ -3,3 +3,4 @@ token
 TLS_KEY_DIR_PATH
 database.sqlite
 settings.toml
+schedule.json

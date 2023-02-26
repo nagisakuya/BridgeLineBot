@@ -1,19 +1,20 @@
-use std::net::SocketAddr;
-use std::{fs, path::PathBuf};
-//use serde_json::Value;
 use axum::body::Bytes;
 use axum::extract::Path;
 use axum::response::Html;
 use axum::*;
 use axum_server::tls_rustls::*;
-use once_cell::sync::Lazy;
-
 use chrono::{prelude::*, Duration};
+use once_cell::sync::Lazy;
+use serde_json::Value;
+use sqlx::Row;
+use std::net::SocketAddr;
+use std::{fs, path::PathBuf};
 
 mod message;
 pub use message::*;
-use serde_json::Value;
-use sqlx::Row;
+
+mod scheduler;
+pub use scheduler::*;
 
 #[allow(non_snake_case)]
 #[derive(serde::Deserialize)]
@@ -49,16 +50,19 @@ async fn main() -> Result<()> {
     .unwrap();
 
     let addr = SocketAddr::from(([192, 168, 1, 19], 443));
-    axum_server::bind_rustls(addr, rustls_config)
-        .serve(app.clone().into_make_service())
-        .await
-        .unwrap();
+    let excute_https_server =
+        axum_server::bind_rustls(addr, rustls_config).serve(app.clone().into_make_service());
 
-    //let addr = SocketAddr::from(([127, 0, 0, 1], 80));
-    //axum::Server::bind(&addr)
-    //    .serve(app.into_make_service())
-    //    .await
-    //    .unwrap();
+    let mut scheduler = Scheduler::from_file("schedule.json").await;
+    let shedule_check = async {
+        loop {
+            scheduler.check().await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    };
+
+    let (result, _) = tokio::join!(excute_https_server, shedule_check);
+    result?;
 
     Ok(())
 }
@@ -193,29 +197,28 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
     Html::from(buf.finish())
 }
 
-async fn create_attendance_check(
-    sql_pool: sqlx::Pool<sqlx::Sqlite>,
-    time: DateTime<Local>,
-    duration: Duration,
-) {
+async fn create_attendance_check(time: DateTime<Local>, duration: Duration) {
     //ランダムid生成
     use rand::Rng;
     let attendance_id = "attendance".to_owned() + &rand::thread_rng().gen::<u64>().to_string();
 
     //sqlに登録
-    sqlx::query("insert into schedule(type,status,sending_schedule,finishing_schedule,data1) values(?,?,?,?,?)")
+    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
+    sqlx::query("insert into schedule(type,status,text,gourp_id,sending_schedule,finishing_schedule,attendance_id) values(?,?,?,?,?,?,?)")
     .bind("attendance")
     .bind("unsended")
+    .bind("出欠確認")
+    .bind(Option::<String>::None)
     .bind(time - duration)
     .bind(time)
     .bind(&attendance_id)
-    .execute(&sql_pool).await.unwrap();
+    .execute(&pool).await.unwrap();
 
     //出欠管理用のテーブル作成
     sqlx::query(&format!(
         "create table {attendance_id}(user_id string,status string)"
     ))
-    .execute(&sql_pool)
+    .execute(&pool)
     .await
     .unwrap();
 
@@ -236,8 +239,7 @@ fn generate_flex(id: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn test() {
-    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
-    create_attendance_check(pool, Local::now(), Duration::seconds(100)).await;
+    create_attendance_check(Local::now(), Duration::seconds(100)).await;
 }
 
 #[tokio::test]
