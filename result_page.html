@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>%TITLE%</title>
+    <style>
+        html{
+            font-size: xxx-large;
+        }
+
+        table {
+            border-collapse: collapse;
+            border-spacing: 0;
+            width: 100%;
+            margin: auto;
+        }
+
+        table tr {
+            border-bottom: solid 1px #eee;
+        }
+
+        table th,
+        table td {
+            text-align: center;
+            width: 25%;
+            padding: 15px 0;
+        }
+
+        .icon {
+            vertical-align: middle;
+            display: inline-block;
+            width: 2em;
+            height: 2em;
+            border-radius:50%;
+            border: solid 4px #746063;
+            background-position: center;
+            margin-right: 0.5em;
+        }
+    </style>
+</head>
+
+<body>
+    <table>
+        <tr>
+            <th width="200">参加 %ATTEND%人</th>
+            <th width="200">保留 %HOLDING%人</th>
+            <th width="200">不参加 %ABSENT%人</th>
+        </tr>
+        <tr>
+            <td>%ATTENDS%</td>
+            <td>%HOLDINGS%</td>
+            <td>%ABSENTS%</td>
+        </tr>
+    </table>
+</body>
+
+</html>

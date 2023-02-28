@@ -30,7 +30,7 @@ impl Todo {
                 attendance_id,
                 group_id,
             } => {
-                let attendance = get_attendance_status(&attendance_id).await;
+                let attendance = get_attendance_status(attendance_id).await;
                 let attend = attendance.attend.len();
                 if attend < 4 {
                     let message = PushMessage {
@@ -61,10 +61,10 @@ impl ScheduleType {
                 let mut temp = weekday.num_days_from_monday() as i64
                     - now.weekday().num_days_from_monday() as i64;
                 if temp > 0 {
-                    temp = temp - 7
+                    temp -= 7
                 }
-                let target_day = now.clone() + Duration::days(temp);
-                let target_datetime = NaiveDateTime::new(target_day.date_naive(), time.clone())
+                let target_day = *now + Duration::days(temp);
+                let target_datetime = NaiveDateTime::new(target_day.date_naive(), *time)
                     .and_local_timezone(Local)
                     .unwrap();
                 //and compare
@@ -141,7 +141,7 @@ impl Schedule {
         let mut index = 0;
         while index < schedules.len() {
             let item = schedules.get_mut(index).unwrap();
-            let (excuted, sch) = item.check(&last, &now).await;
+            let (excuted, sch) = item.check(last, now).await;
             let delete_flag = item.stype.delete_check();
             if let Some(o) = sch {
                 schedules.push(o);
@@ -169,13 +169,12 @@ impl Scheduler {
     pub async fn from_file(path: &str) -> Self {
         let schedules: Vec<Schedule> =
             serde_json::from_reader(fs::File::open(path).unwrap()).unwrap();
-        let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
         let timestamp: DateTime<Local> = sqlx::query("select * from systemdata")
-            .fetch_one(&pool)
+            .fetch_one(DB.get().unwrap())
             .await
             .unwrap()
             .get::<Option<DateTime<Local>>, _>("timestamp")
-            .unwrap_or_else(|| Local::now());
+            .unwrap_or_else(Local::now);
 
         Scheduler {
             schedules,
@@ -190,16 +189,18 @@ impl Scheduler {
     pub async fn check(&mut self) {
         let last = self.timestamp;
         let now = Local::now();
-        let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
         let sql_result = sqlx::query("update systemdata set timestamp=?")
-            .execute(&pool)
+            .execute(DB.get().unwrap())
             .await;
         if sql_result.is_err() {
             return;
         }
         self.timestamp = now;
 
-        Schedule::check_schedules(&mut self.schedules, &last, &now).await;
+        if Schedule::check_schedules(&mut self.schedules, &last, &now).await > 0{
+            self.save_shedule("schedule.json").await.unwrap();
+        }
+
     }
     pub async fn push(&mut self, schedule: Schedule) {
         self.schedules.push(schedule)

@@ -4,17 +4,17 @@ use axum::response::Html;
 use axum::*;
 use axum_server::tls_rustls::*;
 use chrono::{prelude::*, Duration};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use reqwest::StatusCode;
 use serde_json::Value;
-use sqlx::Row;
+use sqlx::{Row, Sqlite};
 use std::net::SocketAddr;
 use std::{fs, path::PathBuf};
 
-mod message;
-pub use message::*;
+pub mod line;
+pub use line::*;
 
-mod scheduler;
+pub mod scheduler;
 pub use scheduler::*;
 
 #[allow(non_snake_case)]
@@ -25,23 +25,27 @@ struct Settings {
     HOST: String,
 }
 
-const SETTINGS: Lazy<Settings> =
+static SETTINGS: Lazy<Settings> =
     Lazy::new(|| toml::from_str(&fs::read_to_string("settings.toml").unwrap()).unwrap());
+
+static DB: OnceCell<sqlx::pool::Pool<Sqlite>> = OnceCell::new();
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+async fn initialize_db() {
+    DB.set(sqlx::SqlitePool::connect("database.sqlite").await.unwrap())
+        .unwrap();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    //let sqlite = sqlx::sqlite::SqliteConnection::connect("sqlite::memory:").await?;
+    initialize_db().await;
 
     let app = Router::new()
         .route("/ping", routing::get(ping))
         .route("/test", routing::post(print_request))
         .route("/line/webhook", routing::post(resieve_webhook))
-        .route(
-            "/line/result/:id",
-            routing::get(move |path| result_page(path)),
-        );
+        .route("/line/result/:id", routing::get(result_page));
 
     let rustls_config = RustlsConfig::from_pem_file(
         SETTINGS.TLS_KEY_DIR_PATH.join("fullchain.pem"),
@@ -91,7 +95,7 @@ async fn resieve_webhook(body: Bytes) {
     let event = json.get("events").unwrap().get(0).unwrap();
     let event_type = event.get("type").map(|f| f.as_str().unwrap());
     if event_type == Some("postback") {
-        insert_attendance(&event).await;
+        insert_attendance(event).await;
     }
 }
 
@@ -102,10 +106,9 @@ async fn insert_attendance(event: &Value) -> Option<()> {
     let status = datas[1];
     let user_id = event.get("source")?.get("userId")?.as_str()?;
 
-    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
     let result = sqlx::query(&format!("select * from {attendance_id} where user_id=?"))
         .bind(user_id)
-        .fetch_one(&pool)
+        .fetch_one(DB.get().unwrap())
         .await;
     if result.is_ok() {
         let _ = sqlx::query(&format!(
@@ -113,7 +116,7 @@ async fn insert_attendance(event: &Value) -> Option<()> {
         ))
         .bind(status)
         .bind(user_id)
-        .execute(&pool)
+        .execute(DB.get().unwrap())
         .await;
     } else {
         let _ = sqlx::query(&format!(
@@ -121,7 +124,7 @@ async fn insert_attendance(event: &Value) -> Option<()> {
         ))
         .bind(user_id)
         .bind(status)
-        .execute(&pool)
+        .execute(DB.get().unwrap())
         .await;
     }
     Some(())
@@ -133,21 +136,20 @@ struct Attendance {
     absent: Vec<String>,
 }
 async fn get_attendance_status(attendance_id: &str) -> Attendance {
-    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
     let query = &format!("select * from {attendance_id} where status = ?");
     let attend: Vec<String> = sqlx::query_scalar(query)
         .bind("attend")
-        .fetch_all(&pool)
+        .fetch_all(DB.get().unwrap())
         .await
         .unwrap();
     let holding: Vec<String> = sqlx::query_scalar(query)
         .bind("holding")
-        .fetch_all(&pool)
+        .fetch_all(DB.get().unwrap())
         .await
         .unwrap();
     let absent: Vec<String> = sqlx::query_scalar(query)
         .bind("absent")
-        .fetch_all(&pool)
+        .fetch_all(DB.get().unwrap())
         .await
         .unwrap();
     Attendance {
@@ -158,69 +160,57 @@ async fn get_attendance_status(attendance_id: &str) -> Attendance {
 }
 
 async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
-    use html_builder::*;
-    use std::fmt::Write;
+    let attendance = get_attendance_status(&attendance_id);
+    let attendance_data = sqlx::query("select * from attendances where attendance_id = ?")
+        .bind(&attendance_id)
+        .fetch_one(DB.get().unwrap());
 
-    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
+    let (attendance, attendance_data) = tokio::join!(attendance, attendance_data);
+
     let Attendance {
         attend,
         holding,
         absent,
-    } = get_attendance_status(&attendance_id).await;
-    let group_id: String = sqlx::query("select * from schedule where attendance_id = ?")
-        .bind(attendance_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get("group_id");
+    } = attendance;
 
-    let mut buf = Buffer::new();
-    let mut html = buf.html().attr("lang='jp'");
-    writeln!(html.title(), "結果").unwrap();
-    writeln!(html.h1(), "参加{}人", attend.len()).unwrap();
-    writeln!(html.h1(), "保留{}人", holding.len()).unwrap();
-    writeln!(html.h1(), "不参加{}人", absent.len()).unwrap();
-    let mut table = html.table();
-    let mut tr = table.tr();
-    writeln!(tr.th(), "参加").unwrap();
-    writeln!(tr.th(), "保留").unwrap();
-    writeln!(tr.th(), "不参加").unwrap();
-    let mut tr = table.tr().attr("border=\"1\"");
-    let mut td = tr.td();
-    let unknown_user = "unknown_user";
-    for user_id in attend {
-        writeln!(
-            td,
-            "{}",
-            get_user_profile_from_group(user_id, &group_id)
+    let attendance_data = attendance_data.unwrap();
+
+    let group_id: String = attendance_data.get("group_id");
+
+    let title: String = attendance_data.get("description");
+
+    let mut html = fs::read_to_string("result_page.html").unwrap();
+    html = html.replace("%TITLE%", &title.to_string());
+    html = html.replace("%ATTEND%", &attend.len().to_string());
+    html = html.replace("%HOLDING%", &holding.len().to_string());
+    html = html.replace("%ABSENT%", &absent.len().to_string());
+
+    async fn ids_to_name(user_ids: &Vec<String>, group_id: &str) -> String {
+        let mut buf = String::default();
+        for user_id in user_ids {
+            buf += &get_user_profile_from_group(user_id, group_id)
                 .await
-                .map_or(unknown_user.to_string(), |f| f.displayName)
-        )
-        .unwrap();
+                .map_or("UNKNOWN_USER".to_string(), |profile| {
+                    profile.pictureUrl.map_or(String::default(), |url| {
+                        format!(r####"<img src="{url}" alt="icon" class="icon">"####)
+                    }) 
+                    + &profile.displayName 
+                    + "<br>"
+                });
+        }
+        buf
     }
-    let mut td = tr.td();
-    for user_id in holding {
-        writeln!(
-            td,
-            "{}",
-            get_user_profile_from_group(user_id, &group_id)
-                .await
-                .map_or(unknown_user.to_string(), |f| f.displayName)
-        )
-        .unwrap();
-    }
-    let mut td = tr.td();
-    for user_id in absent {
-        writeln!(
-            td,
-            "{}",
-            get_user_profile_from_group(user_id, &group_id)
-                .await
-                .map_or(unknown_user.to_string(), |f| f.displayName)
-        )
-        .unwrap();
-    }
-    Html::from(buf.finish())
+
+    let attends = ids_to_name(&attend, &group_id);
+    let holdings = ids_to_name(&holding, &group_id);
+    let absents = ids_to_name(&absent, &group_id);
+
+    let (attends, holdings, absents) = tokio::join!(attends, holdings, absents);
+    html = html.replace("%ATTENDS%", &attends);
+    html = html.replace("%HOLDINGS%", &holdings);
+    html = html.replace("%ABSENTS%", &absents);
+
+    Html::from(html)
 }
 
 async fn create_attendance_check(finishing_time: DateTime<Local>, group_id: &str) -> Schedule {
@@ -228,33 +218,30 @@ async fn create_attendance_check(finishing_time: DateTime<Local>, group_id: &str
     use rand::Rng;
     let attendance_id = "attendance".to_owned() + &rand::thread_rng().gen::<u64>().to_string();
 
+    let text = format!(
+        "{}/{}({})練習会",
+        finishing_time.month(),
+        finishing_time.day(),
+        weekday_to_jp(finishing_time.weekday())
+    );
+
     //sqlに登録
-    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
-    sqlx::query("insert into schedule(type,status,text,group_id,finishing_schedule,attendance_id) values(?,?,?,?,?,?)")
-    .bind("attendance")
-    .bind("unsended")
-    .bind("出欠確認")
+    sqlx::query("insert into attendances(description,group_id,finishing_schedule,attendance_id) values(?,?,?,?)")
+    .bind(&text)
     .bind(group_id)
-    .bind(Option::<String>::None)
     .bind(finishing_time)
     .bind(&attendance_id)
-    .execute(&pool).await.unwrap();
+    .execute(DB.get().unwrap()).await.unwrap();
 
     //出欠管理用のテーブル作成
     sqlx::query(&format!(
         "create table {attendance_id}(user_id string,status string)"
     ))
-    .execute(&pool)
+    .execute(DB.get().unwrap())
     .await
     .unwrap();
 
     //メッセージ送信
-    let text = format!(
-        "{}/{}({})練習会出欠",
-        finishing_time.month(),
-        finishing_time.day(),
-        weekday_to_jp(finishing_time.weekday())
-    );
     let message = PushMessage {
         to: group_id.to_string(),
         messages: vec![Box::new(FlexMessage::new(
@@ -297,7 +284,8 @@ fn generate_flex(id: &str, description: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn test() {
+async fn send_attendance_check_test() {
+    initialize_db().await;
     create_attendance_check(
         Local::now() + Duration::seconds(30),
         "Cfa4de6aca6e93eceb803de886e448330",
@@ -306,15 +294,9 @@ async fn test() {
 }
 
 #[tokio::test]
-async fn test2() {
-    println!("{}", &"aiueo");
-}
-
-#[tokio::test]
 async fn sqlite_test() {
-    let pool = sqlx::SqlitePool::connect("database.sqlite").await.unwrap();
     let var = sqlx::query("select * from test")
-        .fetch_all(&pool)
+        .fetch_all(DB.get().unwrap())
         .await
         .unwrap();
     for item in var {
