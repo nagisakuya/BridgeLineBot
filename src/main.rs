@@ -9,6 +9,7 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use sqlx::{Row, Sqlite};
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::{fs, path::PathBuf};
 
 pub mod line;
@@ -23,6 +24,7 @@ struct Settings {
     TOKEN: String,
     TLS_KEY_DIR_PATH: PathBuf,
     HOST: String,
+    LISTENING_ADDRESS: String,
 }
 
 static SETTINGS: Lazy<Settings> =
@@ -54,7 +56,7 @@ async fn main() -> Result<()> {
     .await
     .unwrap();
 
-    let addr = SocketAddr::from(([192, 168, 1, 19], 443));
+    let addr = SocketAddr::from_str(&SETTINGS.LISTENING_ADDRESS).unwrap();
     let excute_https_server =
         axum_server::bind_rustls(addr, rustls_config).serve(app.clone().into_make_service());
 
@@ -188,15 +190,15 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
     async fn ids_to_name(user_ids: &Vec<String>, group_id: &str) -> String {
         let mut buf = String::default();
         for user_id in user_ids {
-            buf += &get_user_profile_from_group(user_id, group_id)
-                .await
-                .map_or("UNKNOWN_USER".to_string(), |profile| {
+            buf += &get_user_profile_from_group(user_id, group_id).await.map_or(
+                "UNKNOWN_USER".to_string(),
+                |profile| {
                     profile.pictureUrl.map_or(String::default(), |url| {
                         format!(r####"<img src="{url}" alt="icon" class="icon">"####)
-                    }) 
-                    + &profile.displayName 
-                    + "<br>"
-                });
+                    }) + &profile.displayName
+                        + "<br>"
+                },
+            );
         }
         buf
     }

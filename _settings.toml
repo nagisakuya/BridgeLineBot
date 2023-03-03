@@ -1,3 +1,4 @@
-TLS_KEY_DIR_PATH = ""
-TOKEN = ""
-HOST = ""
+TLS_KEY_DIR_PATH = ''
+TOKEN = ''
+HOST = ''
+LISTENING_ADDRESS = ''
