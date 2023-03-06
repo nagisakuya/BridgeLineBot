@@ -8,6 +8,7 @@ use once_cell::sync::{Lazy, OnceCell};
 use reqwest::StatusCode;
 use serde_json::Value;
 use sqlx::{Row, Sqlite};
+use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::{fs, path::PathBuf};
@@ -31,17 +32,28 @@ static SETTINGS: Lazy<Settings> =
     Lazy::new(|| toml::from_str(&fs::read_to_string("settings.toml").unwrap()).unwrap());
 
 static DB: OnceCell<sqlx::pool::Pool<Sqlite>> = OnceCell::new();
-
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
 async fn initialize_db() {
     DB.set(sqlx::SqlitePool::connect("database.sqlite").await.unwrap())
         .unwrap();
 }
 
+static SCHEDULER: OnceCell<Mutex<Scheduler>> = OnceCell::new();
+async fn initialize_scheduler() {
+    SCHEDULER
+        .set(
+            Mutex::new(
+            Scheduler::from_file("schedule.json").await
+            )
+        )
+        .unwrap();
+}
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     initialize_db().await;
+    initialize_scheduler().await;
 
     let app = Router::new()
         .route("/ping", routing::get(ping))
@@ -60,10 +72,9 @@ async fn main() -> Result<()> {
     let excute_https_server =
         axum_server::bind_rustls(addr, rustls_config).serve(app.clone().into_make_service());
 
-    let mut scheduler = Scheduler::from_file("schedule.json").await;
     let shedule_check = async {
         loop {
-            scheduler.check().await;
+            SCHEDULER.get().unwrap().lock().await.check().await;
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     };
@@ -84,21 +95,37 @@ async fn print_request(body: Bytes) -> StatusCode {
     StatusCode::OK
 }
 
-async fn resieve_webhook(body: Bytes) {
+async fn resieve_webhook(body: Bytes) -> StatusCode {
     let body = match String::from_utf8(body.to_vec()) {
         Ok(x) => x,
-        Err(_) => return,
+        Err(_) => return StatusCode::BAD_REQUEST,
     };
     println!("{}", body);
     let json: Value = match serde_json::from_str(&body) {
         Ok(x) => x,
-        Err(_) => return,
+        Err(_) => return StatusCode::BAD_REQUEST,
     };
-    let event = json.get("events").unwrap().get(0).unwrap();
-    let event_type = event.get("type").map(|f| f.as_str().unwrap());
-    if event_type == Some("postback") {
-        insert_attendance(event).await;
+
+    let event = match json.get("events") {
+        Some(e) => match e.get(0) {
+            Some(e) => e,
+            None => return StatusCode::BAD_REQUEST,
+        },
+        None => return StatusCode::BAD_REQUEST,
+    };
+
+    let event_type = event.get("type").map(|f| f.as_str().unwrap_or_default());
+    match event_type {
+        Some("postback") => {
+            insert_attendance(event).await;
+        }
+        Some("message") => {
+            resieve_message(event).await;
+        }
+        _ => (),
     }
+
+    StatusCode::OK
 }
 
 async fn insert_attendance(event: &Value) -> Option<()> {
@@ -129,6 +156,49 @@ async fn insert_attendance(event: &Value) -> Option<()> {
         .execute(DB.get().unwrap())
         .await;
     }
+    Some(())
+}
+
+async fn resieve_message(event: &Value) -> Option<()> {
+    let message: &Value = event.get("message")?;
+    if message.get("type")? != "text" {
+        return None;
+    }
+    let reply_token = event.get("replyToken")?.as_str()?;
+    let text = message.get("text")?.as_str()?.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    if *lines.get(0)? != "休み登録" {
+        return None;
+    }
+    let name = lines.get(1)?;
+    let lock = SCHEDULER.get().unwrap();
+    let date = match NaiveDate::from_str(lines.get(2)?) {
+        Ok(x) => x,
+        Err(_) => return None,
+    };
+    if let ScheduleType::Weekly {
+        weekday,
+        time,
+        ref mut exception,
+    } = lock.lock().await.get_mut(name)?.schedule_type
+    {
+        if weekday != date.weekday() {
+            return None;
+        }
+        let temp = Schedule {
+            id: "休み".to_string(),
+            schedule_type: ScheduleType::OneTime {
+                datetime: NaiveDateTime::new(date, time)
+                    .and_local_timezone(Local)
+                    .unwrap(),
+            },
+            todo: Todo::Test,
+        };
+        exception.push(temp);
+    } else {
+        return None;
+    }
+    lock.lock().await.save_shedule("schedule.json").await.unwrap();
     Some(())
 }
 
@@ -254,14 +324,14 @@ async fn create_attendance_check(finishing_time: DateTime<Local>, group_id: &str
     message.send().await;
 
     Schedule {
-        stype: ScheduleType::OneTime {
+        id: "".to_string(),
+        schedule_type: ScheduleType::OneTime {
             datetime: finishing_time,
         },
         todo: Todo::SendAttendanceInfo {
             attendance_id,
             group_id: group_id.to_string(),
         },
-        exception: vec![],
     }
 }
 

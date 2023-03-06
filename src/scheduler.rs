@@ -1,8 +1,9 @@
+
 use super::*;
 use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Todo {
     CreateAttendanceCheck {
         hour: i64,
@@ -47,16 +48,29 @@ impl Todo {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ScheduleType {
-    OneTime { datetime: DateTime<Local> },
-    Weekly { weekday: Weekday, time: NaiveTime },
+    OneTime {
+        datetime: DateTime<Local>,
+    },
+    Weekly {
+        weekday: Weekday,
+        time: NaiveTime,
+        exception: Vec<Schedule>,
+    },
 }
 impl ScheduleType {
+    fn weekly(weekday: Weekday, time: NaiveTime) -> Self {
+        Self::Weekly {
+            weekday,
+            time,
+            exception: vec![],
+        }
+    }
     fn check(&self, last: &DateTime<Local>, now: &DateTime<Local>) -> bool {
         match self {
             Self::OneTime { datetime } => last < datetime && datetime <= now,
-            Self::Weekly { weekday, time } => {
+            Self::Weekly { weekday, time, .. } => {
                 //get latest date where certain weekday and time
                 let mut temp = weekday.num_days_from_monday() as i64
                     - now.weekday().num_days_from_monday() as i64;
@@ -74,21 +88,15 @@ impl ScheduleType {
     }
     fn delete_check(&self) -> bool {
         match self {
-            Self::OneTime { datetime: _ } => true,
-            Self::Weekly {
-                weekday: _,
-                time: _,
-            } => false,
+            Self::OneTime { .. } => true,
+            Self::Weekly { .. } => false,
         }
     }
 }
 
 #[test]
 fn schedule_type_test() {
-    let temp = ScheduleType::Weekly {
-        weekday: Weekday::Wed,
-        time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
-    };
+    let temp = ScheduleType::weekly(Weekday::Wed, NaiveTime::from_hms_opt(12, 0, 0).unwrap());
     let last = NaiveDateTime::new(
         NaiveDate::from_ymd_opt(2022, 12, 7).unwrap(),
         NaiveTime::from_hms_opt(13, 0, 0).unwrap(),
@@ -106,11 +114,11 @@ fn schedule_type_test() {
     println!("{result}");
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Schedule {
-    pub stype: ScheduleType,
+    pub id: String,
     pub todo: Todo,
-    pub exception: Vec<Schedule>,
+    pub schedule_type: ScheduleType,
 }
 
 impl Schedule {
@@ -121,10 +129,15 @@ impl Schedule {
         last: &DateTime<Local>,
         now: &DateTime<Local>,
     ) -> (bool, Option<Schedule>) {
-        if Self::check_schedules(&mut self.exception, last, now).await > 0 {
-            return (true, None);
+        if let ScheduleType::Weekly {
+            ref mut exception, ..
+        } = self.schedule_type
+        {
+            if Self::check_schedules(exception, last, now).await > 0 {
+                return (true, None);
+            }
         }
-        if self.stype.check(last, now) {
+        if self.schedule_type.check(last, now) {
             if let Some(o) = self.todo.excute().await {
                 return (true, Some(o));
             }
@@ -142,7 +155,7 @@ impl Schedule {
         while index < schedules.len() {
             let item = schedules.get_mut(index).unwrap();
             let (excuted, sch) = item.check(last, now).await;
-            let delete_flag = item.stype.delete_check();
+            let delete_flag = item.schedule_type.delete_check();
             if let Some(o) = sch {
                 schedules.push(o);
             }
@@ -159,7 +172,7 @@ impl Schedule {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Scheduler {
     schedules: Vec<Schedule>,
     timestamp: DateTime<Local>,
@@ -182,14 +195,14 @@ impl Scheduler {
         }
     }
     pub async fn save_shedule(&self, path: &str) -> Result<()> {
-        let writer = fs::File::create(path)?;
-        serde_json::to_writer(writer, &self.schedules)?;
+        fs::write(path, serde_json::to_string(&self.schedules)?)?;
         Ok(())
     }
     pub async fn check(&mut self) {
         let last = self.timestamp;
         let now = Local::now();
         let sql_result = sqlx::query("update systemdata set timestamp=?")
+            .bind(now)
             .execute(DB.get().unwrap())
             .await;
         if sql_result.is_err() {
@@ -197,39 +210,44 @@ impl Scheduler {
         }
         self.timestamp = now;
 
-        if Schedule::check_schedules(&mut self.schedules, &last, &now).await > 0{
+        if Schedule::check_schedules(&mut self.schedules, &last, &now).await > 0 {
             self.save_shedule("schedule.json").await.unwrap();
         }
-
     }
     pub async fn push(&mut self, schedule: Schedule) {
         self.schedules.push(schedule)
+    }
+    pub fn get(&self, name: &str) -> Option<&Schedule> {
+        self.schedules.iter().find(|i| i.id == name)
+    }
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Schedule> {
+        self.schedules.iter_mut().find(|i| i.id == name)
     }
 }
 
 #[tokio::test]
 async fn scheduler_gen() {
     let mut scheduler = Scheduler::default();
-    let mon = ScheduleType::Weekly {
-        weekday: Weekday::Mon,
-        time: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
-    };
-    let thu = ScheduleType::Weekly {
-        weekday: Weekday::Thu,
-        time: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
-    };
+    let mon = ScheduleType::weekly(Weekday::Mon, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+    let thu = ScheduleType::weekly(Weekday::Thu, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
     scheduler
         .push(Schedule {
-            stype: mon,
-            todo: Todo::CreateAttendanceCheck { hour: 6, group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string() },
-            exception: vec![],
+            id: "".to_string(),
+            schedule_type: mon,
+            todo: Todo::CreateAttendanceCheck {
+                hour: 6,
+                group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
+            },
         })
         .await;
     scheduler
         .push(Schedule {
-            stype: thu,
-            todo: Todo::CreateAttendanceCheck { hour: 6, group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string() },
-            exception: vec![],
+            id: "".to_string(),
+            schedule_type: thu,
+            todo: Todo::CreateAttendanceCheck {
+                hour: 6,
+                group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
+            },
         })
         .await;
     scheduler.save_shedule("schedule.json").await.unwrap();
@@ -241,15 +259,16 @@ async fn scheduler_test() {
     let _weekday = ScheduleType::Weekly {
         weekday: Weekday::Mon,
         time: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+        exception: vec![],
     };
     let _onetime = ScheduleType::OneTime {
         datetime: Local::now() + Duration::seconds(10),
     };
     scheduler
         .push(Schedule {
-            stype: _onetime,
+            id: "".to_string(),
+            schedule_type: _onetime,
             todo: Todo::Test,
-            exception: vec![],
         })
         .await;
     let shedule_check = async {
@@ -265,14 +284,14 @@ async fn scheduler_test() {
 async fn serde_test() {
     let mut scheduler = Scheduler::default();
     let schedule = Schedule {
-        stype: ScheduleType::OneTime {
+        id: "".to_string(),
+        schedule_type: ScheduleType::OneTime {
             datetime: Local::now(),
         },
         todo: Todo::CreateAttendanceCheck {
             hour: 7,
             group_id: "group_id".to_string(),
         },
-        exception: vec![],
     };
     scheduler.schedules.push(schedule);
     scheduler.save_shedule("schedule.json").await.unwrap();
