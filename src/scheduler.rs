@@ -60,7 +60,7 @@ pub enum ScheduleType {
     },
 }
 impl ScheduleType {
-    fn weekly(weekday: Weekday, time: NaiveTime) -> Self {
+    fn _weekly(weekday: Weekday, time: NaiveTime) -> Self {
         Self::Weekly {
             weekday,
             time,
@@ -227,8 +227,8 @@ impl Scheduler {
 #[tokio::test]
 async fn scheduler_gen() {
     let mut scheduler = Scheduler::default();
-    let mon = ScheduleType::weekly(Weekday::Mon, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
-    let thu = ScheduleType::weekly(Weekday::Thu, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+    let mon = ScheduleType::_weekly(Weekday::Mon, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+    let thu = ScheduleType::_weekly(Weekday::Thu, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
     scheduler
         .push(Schedule {
             id: "".to_string(),

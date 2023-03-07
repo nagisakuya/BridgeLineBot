@@ -166,7 +166,7 @@ async fn resieve_message(event: &Value) -> Option<()> {
     if message.get("type")? != "text" {
         return None;
     }
-    let reply_token = event.get("replyToken")?.as_str()?;
+    let _reply_token = event.get("replyToken")?.as_str()?;
     let text = message.get("text")?.as_str()?.to_string();
     let lines: Vec<&str> = text.lines().collect();
     if *lines.get(0)? != "休み登録" {
@@ -262,14 +262,22 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
 
     async fn ids_to_name(user_ids: &Vec<String>, group_id: &str) -> String {
         let mut buf = String::default();
-        for user_id in user_ids {
-            buf += &get_user_profile_from_group(user_id, group_id).await.map_or(
+        let mut futures = vec![];
+        for user_id in user_ids{
+            futures.push(tokio::spawn(get_user_profile_from_group(user_id.to_owned(), group_id.to_owned())));
+        }
+        let mut result = vec![];
+        for future in futures{
+            result.push(future.await.unwrap());
+        }
+        for profile in result {
+            buf += &profile.map_or(
                 "UNKNOWN_USER".to_string(),
                 |profile| {
-                    profile.pictureUrl.map_or(String::default(), |url| {
+                    let icon = profile.pictureUrl.map_or(String::default(), |url| {
                         format!(r####"<img src="{url}" alt="icon" class="icon">"####)
-                    }) + &profile.displayName
-                        + "<br>"
+                    });
+                    format!(r##"<div class="box">{}{}<br>"##,icon,profile.displayName)
                 },
             );
         }

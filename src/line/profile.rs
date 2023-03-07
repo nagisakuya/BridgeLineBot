@@ -23,7 +23,7 @@ pub async fn get_user_profile_from_friend(user_id: String) -> Option<UserProfile
     Some(profile)
 }
 
-pub async fn get_user_profile_from_group(user_id: &str, group_id: &str) -> Option<UserProfile> {
+pub async fn get_user_profile_from_group(user_id: String, group_id: String) -> Option<UserProfile> {
     let resp = send_get_request(&format!(
         "https://api.line.me/v2/bot/group/{group_id}/member/{user_id}"
     ))
