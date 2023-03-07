@@ -277,7 +277,7 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
                     let icon = profile.pictureUrl.map_or(String::default(), |url| {
                         format!(r####"<img src="{url}" alt="icon" class="icon">"####)
                     });
-                    format!(r##"<div class="box">{}{}<br>"##,icon,profile.displayName)
+                    format!(r##"<div class="box">{}{}</div><br>"##,icon,profile.displayName)
                 },
             );
         }
