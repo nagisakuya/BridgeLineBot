@@ -270,11 +270,12 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
         for future in futures{
             result.push(future.await.unwrap());
         }
+        const DEFAULT_ICON:&str = "https://1.bp.blogspot.com/-Mg_bPzvfARs/X7zMMXm5MwI/AAAAAAABcZs/w1r2ibtWh6EirjFEcJPaYiNeyZlGqT8jgCNcBGAsYHQ/s672/vegetable_moyashi_pack.png";
         for profile in result {
             buf += &profile.map_or(
                 "UNKNOWN_USER".to_string(),
                 |profile| {
-                    let icon = profile.pictureUrl.map_or(String::default(), |url| {
+                    let icon = profile.pictureUrl.map_or(DEFAULT_ICON.to_string(), |url| {
                         format!(r####"<img src="{url}" alt="icon" class="icon">"####)
                     });
                     format!(r##"<div class="box">{}{}</div><br>"##,icon,profile.displayName)
