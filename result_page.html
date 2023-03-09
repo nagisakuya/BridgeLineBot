@@ -19,15 +19,23 @@
             border-bottom: solid 1px #eee;
         }
 
-        table th,
         table td {
             text-align: center;
+            vertical-align: top;
             width: 33%;
             padding: 15px 0;
         }
 
         table th {
             font-size: 2em;
+            text-align: center;
+            width: 33%;
+            padding: 15px 0;
+        }
+
+        .inner-block{
+            text-align: center;
+            display: inline-block;
         }
 
         .icon {
@@ -42,10 +50,11 @@
         }
 
         .box {
-            margin: 0.2em;
+            /* margin-left: 0.5em; */
             height: 2em;
-            font-size: 2em;
+            font-size: 1.7rem;
             text-align: left;
+            vertical-align: top;
         }
     </style>
 </head>
@@ -58,9 +67,9 @@
             <th width="200">不参加 %ABSENT%人</th>
         </tr>
         <tr>
-            <td>%ATTENDS%</td>
-            <td>%HOLDINGS%</td>
-            <td>%ABSENTS%</td>
+            <td><div class="inner-block">%ATTENDS%</div></td>
+            <td><div class="inner-block">%HOLDINGS%</div></td>
+            <td><div class="inner-block">%ABSENTS%</div></td>
         </tr>
     </table>
 </body>
