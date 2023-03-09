@@ -275,9 +275,8 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
             buf += &profile.map_or(
                 "UNKNOWN_USER".to_string(),
                 |profile| {
-                    let icon = profile.pictureUrl.map_or(DEFAULT_ICON.to_string(), |url| {
-                        format!(r####"<img src="{url}" alt="icon" class="icon">"####)
-                    });
+                    let url = profile.pictureUrl.unwrap_or_else(||DEFAULT_ICON.to_string());
+                    let icon = format!(r####"<img src="{url}" alt="icon" class="icon">"####);
                     format!(r##"<div class="box">{}{}</div><br>"##,icon,profile.displayName)
                 },
             );
