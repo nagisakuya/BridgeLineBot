@@ -7,21 +7,23 @@ use serde::{Deserialize, Serialize};
 pub enum Todo {
     CreateAttendanceCheck {
         hour: i64,
-        group_id: String,
     },
     SendAttendanceInfo {
         attendance_id: String,
-        group_id: String,
     },
     Test,
+    SendMessage {
+        contents: SimpleMessage,
+    },
+    Nothing,
 }
 
 impl Todo {
-    async fn excute(&self) -> Option<Schedule> {
+    async fn excute(&self,group_id:&str, schedule_id:&str ,time:DateTime<Utc>) -> Option<Schedule> {
         match self {
-            Self::CreateAttendanceCheck { hour, group_id } => {
+            Self::CreateAttendanceCheck { hour } => {
                 let schedule =
-                    create_attendance_check(Utc::now() + Duration::hours(*hour), group_id).await;
+                    create_attendance_check(time + Duration::hours(*hour), group_id ,schedule_id).await;
                 return Some(schedule);
             }
             Self::Test => {
@@ -29,7 +31,6 @@ impl Todo {
             }
             Self::SendAttendanceInfo {
                 attendance_id,
-                group_id,
             } => {
                 let attendance = get_attendance_status(attendance_id).await;
                 let attend = attendance.attend.len();
@@ -43,6 +44,14 @@ impl Todo {
                     message.send().await;
                 }
             }
+            Self::SendMessage {contents} =>{
+                let sender = PushMessage{
+                    to:group_id.to_string(),
+                    messages:vec![Box::new(contents.clone())]
+                };
+                sender.send().await;
+            }
+            Self::Nothing => {}
         }
         None
     }
@@ -67,9 +76,9 @@ impl ScheduleType {
             exception: vec![],
         }
     }
-    fn check(&self, last: &DateTime<Utc>, now: &DateTime<Utc>) -> bool {
+    fn check(&self, last: &DateTime<Utc>, now: &DateTime<Utc>) -> (bool,DateTime<Utc>) {
         match self {
-            Self::OneTime { datetime } => last < datetime && datetime <= now,
+            Self::OneTime { datetime } => (last < datetime && datetime <= now,*datetime),
             Self::Weekly { weekday, time, .. } => {
                 //get latest date where certain weekday and time
                 let mut temp = weekday.num_days_from_monday() as i64
@@ -78,10 +87,10 @@ impl ScheduleType {
                     temp -= 7
                 }
                 let target_day = *now + Duration::days(temp);
-                let local_datetime = NaiveDateTime::new(target_day.date_naive(), *time).and_local_timezone(TIMEZONE.clone()).unwrap();
+                let local_datetime = NaiveDateTime::new(target_day.date_naive(), *time).and_local_timezone(*TIMEZONE).unwrap();
                 let target_datetime:DateTime<Utc> = DateTime::from_utc(local_datetime.naive_utc(),Utc);
                 //and compare
-                last < &target_datetime && &target_datetime <= now
+                (last < &target_datetime && &target_datetime <= now,target_datetime)
             }
         }
     }
@@ -118,6 +127,7 @@ pub struct Schedule {
     pub id: String,
     pub todo: Todo,
     pub schedule_type: ScheduleType,
+    pub group_id: String,
 }
 
 impl Schedule {
@@ -136,8 +146,9 @@ impl Schedule {
                 return (true, None);
             }
         }
-        if self.schedule_type.check(last, now) {
-            if let Some(o) = self.todo.excute().await {
+        let (fired,fired_time) = self.schedule_type.check(last, now);
+        if fired {
+            if let Some(o) = self.todo.excute(&self.group_id,&self.id,fired_time).await {
                 return (true, Some(o));
             }
             return (true, None);
@@ -186,7 +197,7 @@ impl Scheduler {
             .await
             .unwrap()
             .get::<Option<DateTime<Utc>>, _>("timestamp")
-            .unwrap_or_else(||Utc::now());
+            .unwrap_or_else(Utc::now);
 
         Scheduler {
             schedules,
@@ -232,10 +243,10 @@ async fn scheduler_gen() {
     scheduler
         .push(Schedule {
             id: "".to_string(),
+            group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
             schedule_type: mon,
             todo: Todo::CreateAttendanceCheck {
                 hour: 6,
-                group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
             },
         })
         .await;
@@ -243,9 +254,9 @@ async fn scheduler_gen() {
         .push(Schedule {
             id: "".to_string(),
             schedule_type: thu,
+            group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
             todo: Todo::CreateAttendanceCheck {
                 hour: 6,
-                group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
             },
         })
         .await;
@@ -266,6 +277,7 @@ async fn scheduler_test() {
     scheduler
         .push(Schedule {
             id: "".to_string(),
+            group_id: "".to_string(),
             schedule_type: _onetime,
             todo: Todo::Test,
         })
@@ -284,12 +296,12 @@ async fn serde_test() {
     let mut scheduler = Scheduler::default();
     let schedule = Schedule {
         id: "".to_string(),
+        group_id: "group_id".to_string(),
         schedule_type: ScheduleType::OneTime {
             datetime: Utc::now(),
         },
         todo: Todo::CreateAttendanceCheck {
             hour: 7,
-            group_id: "group_id".to_string(),
         },
     };
     scheduler.schedules.push(schedule);

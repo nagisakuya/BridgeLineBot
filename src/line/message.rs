@@ -1,13 +1,12 @@
-
 use erased_serde::serialize_trait_object;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub trait Message: erased_serde::Serialize + 'static + Send + Sync {
     fn json(&self) -> String;
 }
 serialize_trait_object!(Message);
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimpleMessage {
     #[serde(rename = "type")]
     type_: String,
@@ -27,7 +26,7 @@ impl Message for SimpleMessage {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct FlexMessage {
     #[serde(rename = "type")]

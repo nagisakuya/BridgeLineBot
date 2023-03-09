@@ -3,15 +3,15 @@ use axum::extract::Path;
 use axum::response::Html;
 use axum::*;
 use axum_server::tls_rustls::*;
-use chrono::{prelude::*, Duration ,FixedOffset};
+use chrono::{prelude::*, Duration, FixedOffset};
 use once_cell::sync::{Lazy, OnceCell};
 use reqwest::StatusCode;
 use serde_json::Value;
 use sqlx::{Row, Sqlite};
-use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::{fs, path::PathBuf};
+use tokio::sync::Mutex;
 
 pub mod line;
 pub use line::*;
@@ -37,16 +37,12 @@ async fn initialize_db() {
         .unwrap();
 }
 
-static TIMEZONE: Lazy<FixedOffset> = Lazy::new(||FixedOffset::east_opt(9 * 3600).unwrap());
+static TIMEZONE: Lazy<FixedOffset> = Lazy::new(|| FixedOffset::east_opt(9 * 3600).unwrap());
 
 static SCHEDULER: OnceCell<Mutex<Scheduler>> = OnceCell::new();
 async fn initialize_scheduler() {
     SCHEDULER
-        .set(
-            Mutex::new(
-            Scheduler::from_file("schedule.json").await
-            )
-        )
+        .set(Mutex::new(Scheduler::from_file("schedule.json").await))
         .unwrap();
 }
 
@@ -169,39 +165,55 @@ async fn resieve_message(event: &Value) -> Option<()> {
     let _reply_token = event.get("replyToken")?.as_str()?;
     let text = message.get("text")?.as_str()?.to_string();
     let lines: Vec<&str> = text.lines().collect();
-    if *lines.get(0)? != "休み登録" {
+    if *lines.first()? != "休み登録" {
         return None;
     }
     let name = lines.get(1)?;
-    let lock = SCHEDULER.get().unwrap();
     let date = match NaiveDate::from_str(lines.get(2)?) {
         Ok(x) => x,
         Err(_) => return None,
     };
-    if let ScheduleType::Weekly {
-        weekday,
-        time,
-        ref mut exception,
-    } = lock.lock().await.get_mut(name)?.schedule_type
+    let reason = lines.get(3);
+    let lock = SCHEDULER.get().unwrap();
+    let mut guard = lock.lock().await;
+    if let &mut Schedule {
+        ref group_id,
+        schedule_type:
+            ScheduleType::Weekly {
+                weekday,
+                time,
+                ref mut exception,
+            },
+        ..
+    } = guard.get_mut(name)?
     {
         if weekday != date.weekday() {
             return None;
         }
+        let todo = match reason {
+            Some(o) => Todo::SendMessage {
+                contents: SimpleMessage::new(o),
+            },
+            None => Todo::Nothing,
+        };
         let temp = Schedule {
             id: "休み".to_string(),
+            group_id: group_id.clone(),
             schedule_type: ScheduleType::OneTime {
                 datetime: {
-                    let local = NaiveDateTime::new(date, time).and_local_timezone(TIMEZONE.clone()).unwrap();
+                    let local = NaiveDateTime::new(date, time)
+                        .and_local_timezone(*TIMEZONE)
+                        .unwrap();
                     DateTime::<Utc>::from_utc(local.naive_utc(), Utc)
-                }
+                },
             },
-            todo: Todo::Test,
+            todo,
         };
         exception.push(temp);
     } else {
         return None;
     }
-    lock.lock().await.save_shedule("schedule.json").await.unwrap();
+    guard.save_shedule("schedule.json").await.unwrap();
     Some(())
 }
 
@@ -263,23 +275,28 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
     async fn ids_to_name(user_ids: &Vec<String>, group_id: &str) -> String {
         let mut buf = String::default();
         let mut futures = vec![];
-        for user_id in user_ids{
-            futures.push(tokio::spawn(get_user_profile_from_group(user_id.to_owned(), group_id.to_owned())));
+        for user_id in user_ids {
+            futures.push(tokio::spawn(get_user_profile_from_group(
+                user_id.to_owned(),
+                group_id.to_owned(),
+            )));
         }
         let mut result = vec![];
-        for future in futures{
+        for future in futures {
             result.push(future.await.unwrap());
         }
         const DEFAULT_ICON:&str = "https://1.bp.blogspot.com/-Mg_bPzvfARs/X7zMMXm5MwI/AAAAAAABcZs/w1r2ibtWh6EirjFEcJPaYiNeyZlGqT8jgCNcBGAsYHQ/s672/vegetable_moyashi_pack.png";
         for profile in result {
-            buf += &profile.map_or(
-                "UNKNOWN_USER".to_string(),
-                |profile| {
-                    let url = profile.pictureUrl.unwrap_or_else(||DEFAULT_ICON.to_string());
-                    let icon = format!(r####"<img src="{url}" alt="icon" class="icon">"####);
-                    format!(r##"<div class="box">{}{}</div><br>"##,icon,profile.displayName)
-                },
-            );
+            buf += &profile.map_or("UNKNOWN_USER".to_string(), |profile| {
+                let url = profile
+                    .pictureUrl
+                    .unwrap_or_else(|| DEFAULT_ICON.to_string());
+                let icon = format!(r####"<img src="{url}" alt="icon" class="icon">"####);
+                format!(
+                    r##"<div class="box">{}{}</div><br>"##,
+                    icon, profile.displayName
+                )
+            });
         }
         buf
     }
@@ -296,16 +313,21 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
     Html::from(html)
 }
 
-async fn create_attendance_check(finishing_time: DateTime<Utc>, group_id: &str) -> Schedule {
+async fn create_attendance_check(
+    finishing_time: DateTime<Utc>,
+    group_id: &str,
+    event_name: &str,
+) -> Schedule {
     //ランダムid生成
     use rand::Rng;
     let attendance_id = "attendance".to_owned() + &rand::thread_rng().gen::<u64>().to_string();
 
     let text = format!(
-        "{}/{}({})練習会",
+        "{}/{}({}){}",
         finishing_time.month(),
         finishing_time.day(),
-        weekday_to_jp(finishing_time.weekday())
+        weekday_to_jp(finishing_time.weekday()),
+        event_name
     );
 
     //sqlに登録
@@ -339,10 +361,8 @@ async fn create_attendance_check(finishing_time: DateTime<Utc>, group_id: &str) 
         schedule_type: ScheduleType::OneTime {
             datetime: finishing_time,
         },
-        todo: Todo::SendAttendanceInfo {
-            attendance_id,
-            group_id: group_id.to_string(),
-        },
+        todo: Todo::SendAttendanceInfo { attendance_id },
+        group_id: group_id.to_string(),
     }
 }
 
