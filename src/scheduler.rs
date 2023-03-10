@@ -19,11 +19,11 @@ pub enum Todo {
 }
 
 impl Todo {
-    async fn excute(&self,group_id:&str, schedule_id:&str ,time:DateTime<Utc>) -> Option<Schedule> {
+    async fn excute(&self, schedule_id:&str ,time:DateTime<Utc>) -> Option<Schedule> {
         match self {
             Self::CreateAttendanceCheck { hour } => {
                 let schedule =
-                    create_attendance_check(time + Duration::hours(*hour), group_id ,schedule_id).await;
+                    create_attendance_check(time + Duration::hours(*hour) ,schedule_id).await;
                 return Some(schedule);
             }
             Self::Test => {
@@ -36,7 +36,7 @@ impl Todo {
                 let attend = attendance.attend.len();
                 if attend < 4 {
                     let message = PushMessage {
-                        to: group_id.to_string(),
+                        to: SETTINGS.BINDED_GROUP_ID.clone(),
                         messages: vec![Box::new(SimpleMessage::new(
                             "今のところ卓が立たなさそうです！！！やばいです！！！",
                         ))],
@@ -46,7 +46,7 @@ impl Todo {
             }
             Self::SendMessage {contents} =>{
                 let sender = PushMessage{
-                    to:group_id.to_string(),
+                    to:SETTINGS.BINDED_GROUP_ID.clone(),
                     messages:vec![Box::new(contents.clone())]
                 };
                 sender.send().await;
@@ -127,7 +127,6 @@ pub struct Schedule {
     pub id: String,
     pub todo: Todo,
     pub schedule_type: ScheduleType,
-    pub group_id: String,
 }
 
 impl Schedule {
@@ -148,7 +147,7 @@ impl Schedule {
         }
         let (fired,fired_time) = self.schedule_type.check(last, now);
         if fired {
-            if let Some(o) = self.todo.excute(&self.group_id,&self.id,fired_time).await {
+            if let Some(o) = self.todo.excute(&self.id,fired_time).await {
                 return (true, Some(o));
             }
             return (true, None);
@@ -243,7 +242,6 @@ async fn scheduler_gen() {
     scheduler
         .push(Schedule {
             id: "".to_string(),
-            group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
             schedule_type: mon,
             todo: Todo::CreateAttendanceCheck {
                 hour: 6,
@@ -254,7 +252,6 @@ async fn scheduler_gen() {
         .push(Schedule {
             id: "".to_string(),
             schedule_type: thu,
-            group_id: "Cfa4de6aca6e93eceb803de886e448330".to_string(),
             todo: Todo::CreateAttendanceCheck {
                 hour: 6,
             },
@@ -277,7 +274,6 @@ async fn scheduler_test() {
     scheduler
         .push(Schedule {
             id: "".to_string(),
-            group_id: "".to_string(),
             schedule_type: _onetime,
             todo: Todo::Test,
         })
@@ -296,7 +292,6 @@ async fn serde_test() {
     let mut scheduler = Scheduler::default();
     let schedule = Schedule {
         id: "".to_string(),
-        group_id: "group_id".to_string(),
         schedule_type: ScheduleType::OneTime {
             datetime: Utc::now(),
         },

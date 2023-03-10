@@ -26,6 +26,8 @@ struct Settings {
     TLS_KEY_DIR_PATH: PathBuf,
     HOST: String,
     LISTENING_ADDRESS: String,
+    BINDED_GROUP_ID: String,
+    DEFAULT_ICON_URL: String,
 }
 
 static SETTINGS: Lazy<Settings> =
@@ -162,22 +164,32 @@ async fn resieve_message(event: &Value) -> Option<()> {
     if message.get("type")? != "text" {
         return None;
     }
-    let _reply_token = event.get("replyToken")?.as_str()?;
+    //let reply_token = event.get("replyToken")?.as_str()?;
     let text = message.get("text")?.as_str()?.to_string();
     let lines: Vec<&str> = text.lines().collect();
-    if *lines.first()? != "休み登録" {
-        return None;
+    match *lines.first()? {
+        "休み登録" => {
+            push_exception(lines).await;
+            None
+        }
+        "イベント登録" => {
+            push_event(lines).await;
+            None
+        }
+        _ => None,
     }
-    let name = lines.get(1)?;
-    let date = match NaiveDate::from_str(lines.get(2)?) {
+}
+
+async fn push_exception(args: Vec<&str>) -> Option<()> {
+    let name = args.get(1)?;
+    let date = match NaiveDate::parse_from_str(args.get(2)?,"%Y/%m/%d") {
         Ok(x) => x,
         Err(_) => return None,
     };
-    let reason = lines.get(3);
+    let reason = args.get(3);
     let lock = SCHEDULER.get().unwrap();
     let mut guard = lock.lock().await;
     if let &mut Schedule {
-        ref group_id,
         schedule_type:
             ScheduleType::Weekly {
                 weekday,
@@ -198,7 +210,6 @@ async fn resieve_message(event: &Value) -> Option<()> {
         };
         let temp = Schedule {
             id: "休み".to_string(),
-            group_id: group_id.clone(),
             schedule_type: ScheduleType::OneTime {
                 datetime: {
                     let local = NaiveDateTime::new(date, time)
@@ -213,6 +224,29 @@ async fn resieve_message(event: &Value) -> Option<()> {
     } else {
         return None;
     }
+    guard.save_shedule("schedule.json").await.unwrap();
+    Some(())
+}
+
+async fn push_event(args: Vec<&str>) -> Option<()> {
+    let name = args.get(1)?;
+    let date = match NaiveDateTime::parse_from_str(args.get(2)?,"%Y/%m/%d %H:%M") {
+        Ok(x) => x.and_local_timezone(*TIMEZONE).unwrap(),
+        Err(_) => return None,
+    };
+    let lock = SCHEDULER.get().unwrap();
+    let mut guard = lock.lock().await;
+    let schedule = Schedule {
+        id: name.to_string(),
+        schedule_type: ScheduleType::OneTime {
+            datetime: {
+                let send = date - Duration::hours(24);
+                DateTime::<Utc>::from_utc(send.naive_utc(), Utc)
+            },
+        },
+        todo: Todo::CreateAttendanceCheck { hour: 24 },
+    };
+    guard.push(schedule).await;
     guard.save_shedule("schedule.json").await.unwrap();
     Some(())
 }
@@ -285,12 +319,11 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
         for future in futures {
             result.push(future.await.unwrap());
         }
-        const DEFAULT_ICON:&str = "https://1.bp.blogspot.com/-Mg_bPzvfARs/X7zMMXm5MwI/AAAAAAABcZs/w1r2ibtWh6EirjFEcJPaYiNeyZlGqT8jgCNcBGAsYHQ/s672/vegetable_moyashi_pack.png";
         for profile in result {
             buf += &profile.map_or("UNKNOWN_USER".to_string(), |profile| {
                 let url = profile
                     .pictureUrl
-                    .unwrap_or_else(|| DEFAULT_ICON.to_string());
+                    .unwrap_or_else(|| SETTINGS.DEFAULT_ICON_URL.to_string());
                 let icon = format!(r####"<img src="{url}" alt="icon" class="icon">"####);
                 format!(
                     r##"<div class="box">{}{}</div><br>"##,
@@ -313,11 +346,7 @@ async fn result_page(Path(attendance_id): Path<String>) -> Html<String> {
     Html::from(html)
 }
 
-async fn create_attendance_check(
-    finishing_time: DateTime<Utc>,
-    group_id: &str,
-    event_name: &str,
-) -> Schedule {
+async fn create_attendance_check(finishing_time: DateTime<Utc>, event_name: &str) -> Schedule {
     //ランダムid生成
     use rand::Rng;
     let attendance_id = "attendance".to_owned() + &rand::thread_rng().gen::<u64>().to_string();
@@ -333,7 +362,7 @@ async fn create_attendance_check(
     //sqlに登録
     sqlx::query("insert into attendances(description,group_id,finishing_schedule,attendance_id) values(?,?,?,?)")
     .bind(&text)
-    .bind(group_id)
+    .bind(&SETTINGS.BINDED_GROUP_ID)
     .bind(finishing_time)
     .bind(&attendance_id)
     .execute(DB.get().unwrap()).await.unwrap();
@@ -348,7 +377,7 @@ async fn create_attendance_check(
 
     //メッセージ送信
     let message = PushMessage {
-        to: group_id.to_string(),
+        to: SETTINGS.BINDED_GROUP_ID.clone(),
         messages: vec![Box::new(FlexMessage::new(
             generate_flex(&attendance_id, &text),
             &text,
@@ -362,7 +391,6 @@ async fn create_attendance_check(
             datetime: finishing_time,
         },
         todo: Todo::SendAttendanceInfo { attendance_id },
-        group_id: group_id.to_string(),
     }
 }
 
