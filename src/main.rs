@@ -174,7 +174,10 @@ async fn resieve_message(event: &Value) -> Option<()> {
         "イベント登録" => {
             push_event(lines).await.get()
         }
-        _ => return None,
+        "使い方" => {
+            fs::read_to_string("usage.txt").unwrap()
+        }
+        _ => "「使い方」と送ると使い方が見れます".to_string(),
     };
     let author = event.get("source")?.get("userId")?.as_str()?;
     let message = PushMessage{
@@ -185,7 +188,7 @@ async fn resieve_message(event: &Value) -> Option<()> {
     Some(())
 }
 
-enum Responce {
+enum Response {
     Success(String),
     DateParseError,
     NotEnoughArgment,
@@ -193,23 +196,23 @@ enum Responce {
     UnvalidDate,
     EventNotFound,
 }
-impl Responce {
+impl Response {
     fn get(self) -> String {
         match self {
-            Responce::Success(s) => s,
-            Responce::DateParseError => "日付の形式が違います".to_owned(),
-            Responce::NotEnoughArgment => "パラメータが足りません".to_owned(),
-            Responce::PassedDate => "過去の日付です".to_owned(),
-            Responce::UnvalidDate => "不正な日付です".to_owned(),
-            Responce::EventNotFound => "イベントが見つかりません".to_owned(),
+            Response::Success(s) => s,
+            Response::DateParseError => "日付の形式が違います".to_owned(),
+            Response::NotEnoughArgment => "パラメータが足りません".to_owned(),
+            Response::PassedDate => "過去の日付です".to_owned(),
+            Response::UnvalidDate => "不正な日付です".to_owned(),
+            Response::EventNotFound => "イベントが見つかりません".to_owned(),
         }
     }
 }
 
-async fn push_exception(args: Vec<&str>) -> Responce {
-    let Some(&name) = args.get(1) else {return Responce::NotEnoughArgment};
-    let Some(&date) = args.get(2) else {return Responce::NotEnoughArgment};
-    let Ok(date) = NaiveDate::parse_from_str(date,"%Y/%m/%d")else {return Responce::DateParseError};
+async fn push_exception(args: Vec<&str>) -> Response {
+    let Some(&name) = args.get(1) else {return Response::NotEnoughArgment};
+    let Some(&date) = args.get(2) else {return Response::NotEnoughArgment};
+    let Ok(date) = NaiveDate::parse_from_str(date,"%Y/%m/%d")else {return Response::DateParseError};
     let reason = args.get(3);
     let mut scheduler = SCHEDULER.get().unwrap().lock().await;
     let Some(&mut Schedule {
@@ -220,10 +223,10 @@ async fn push_exception(args: Vec<&str>) -> Responce {
                 ref mut exception,
             },
         ..
-    }) = scheduler.get_mut(name) else {return Responce::EventNotFound};
+    }) = scheduler.get_mut(name) else {return Response::EventNotFound};
 
     if weekday != date.weekday() {
-        return Responce::UnvalidDate;
+        return Response::UnvalidDate;
     }
     let datetime = {
         let local = NaiveDateTime::new(date, time)
@@ -232,7 +235,7 @@ async fn push_exception(args: Vec<&str>) -> Responce {
         DateTime::<Utc>::from_utc(local.naive_utc(), Utc)
     };
     if datetime < Utc::now() {
-        return Responce::PassedDate;
+        return Response::PassedDate;
     }
     let todo = match reason {
         Some(o) => Todo::SendMessage {
@@ -248,30 +251,41 @@ async fn push_exception(args: Vec<&str>) -> Responce {
     exception.push(temp);
 
     scheduler.save_shedule("schedule.json").await.unwrap();
-    Responce::Success("休み登録成功".to_owned())
+    Response::Success("休み登録成功".to_owned())
 }
 
-async fn push_event(args: Vec<&str>) -> Responce {
-    let Some(&name) = args.get(1) else {return Responce::NotEnoughArgment};
-    let Some(&date) = args.get(2) else {return Responce::NotEnoughArgment};
-    let Ok(date) = NaiveDateTime::parse_from_str(date,"%Y/%m/%d %H:%M")else {return Responce::DateParseError};
-    let mut scheduler = SCHEDULER.get().unwrap().lock().await;
-    let schedule = Schedule {
-        id: name.to_string(),
-        schedule_type: ScheduleType::OneTime {
-            datetime: {
-                let send = date.and_local_timezone(*TIMEZONE).unwrap() - Duration::hours(24);
-                if send < Utc::now() {
-                    return Responce::PassedDate;
-                }
-                DateTime::<Utc>::from_utc(send.naive_utc(), Utc)
+async fn push_event(args: Vec<&str>) -> Response {
+    let Some(&name) = args.get(1) else {return Response::NotEnoughArgment};
+    let Some(&date) = args.get(2) else {return Response::NotEnoughArgment};
+    let duration_hour:Option<i64> = args.get(3).map(|x|x.parse().ok()).unwrap_or_default();
+    let Ok(date) = NaiveDateTime::parse_from_str(date,"%Y/%m/%d %H:%M") else {return Response::DateParseError};
+    let date = date.and_local_timezone(*TIMEZONE).unwrap();
+
+    if let Some(hour) = duration_hour{
+        let mut scheduler = SCHEDULER.get().unwrap().lock().await;
+        let schedule = Schedule {
+            id: name.to_string(),
+            schedule_type: ScheduleType::OneTime {
+                datetime: {
+                    let send = date - Duration::hours(hour);
+                    if send < Utc::now() {
+                        return Response::PassedDate;
+                    }
+                    DateTime::<Utc>::from_utc(send.naive_utc(), Utc)
+                },
             },
-        },
-        todo: Todo::CreateAttendanceCheck { hour: 24 },
-    };
-    scheduler.push(schedule).await;
-    scheduler.save_shedule("schedule.json").await.unwrap();
-    Responce::Success("イベントの登録に成功しました".to_string())
+            todo: Todo::CreateAttendanceCheck { hour: hour },
+        };
+        scheduler.push(schedule).await;
+        scheduler.save_shedule("schedule.json").await.unwrap();
+        Response::Success("イベントの登録に成功しました".to_string())
+    }else{
+        if date < Utc::now() {
+            return Response::PassedDate;
+        }
+        create_attendance_check(DateTime::<Utc>::from_utc(date.naive_utc(), Utc),name).await;
+        Response::Success("イベントを送信しました".to_string())
+    }
 }
 
 struct Attendance {
