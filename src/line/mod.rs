@@ -44,11 +44,12 @@ pub struct PushMessage {
 impl PushMessage {
     pub async fn send(&self) {
         println!("{}", serde_json::to_string(self).unwrap());
-        let _ = send_post_request(
+        let responce = send_post_request(
             "https://api.line.me/v2/bot/message/push",
             &serde_json::to_string(self).unwrap(),
         )
         .await;
+        println!("{:?}", responce);
     }
 }
 

@@ -177,7 +177,13 @@ async fn resieve_message(event: &Value) -> Option<()> {
         "使い方" => {
             fs::read_to_string("usage.txt").unwrap()
         }
-        _ => "「使い方」と送ると使い方が見れます".to_string(),
+        _ => {
+            if event.get("source")?.get("type")? == "user" {
+                "「使い方」と送ると使い方が見れます".to_string()
+            }else{
+                return None;
+            }
+        },
     };
     let author = event.get("source")?.get("userId")?.as_str()?;
     let message = PushMessage{
